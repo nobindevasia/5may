@@ -1,0 +1,99 @@
+{
+  "modelConfig": {
+    "author": "Nobin Devasia",
+    "description": "Model for Agenitor 408",
+    "modelType": "BinaryClassification",
+    "targetField": "Label",
+
+    "database": {
+      "server": "sim-01-02",
+      "database": "sql-iris-dev",
+      "whereClause": "",
+      "tableName": "ComputeData.MessageProb256_Ag408_dummy",
+      "outputTableName": ""
+    },
+
+    "dataBalancing": {
+      "method": "Smote",
+      "executionOrder": 2,
+      "kNeighbors": 1,
+      "undersamplingRatio": 0.9,
+      "minorityToMajorityRatio": 0.1
+    },
+
+    "featureEngineering": {
+      "method": "Correlation",
+      "executionOrder": 1,
+      "numberOfComponents": 2,
+      "maxFeatures": 2,
+      "minImprovement": 0.01,
+      "multicollinearityThreshold": 0.7
+    },
+
+    "trainingParameters": {
+      "algorithm": "fasttree",
+      "algorithmParameters": {
+        "NumberOfLeaves": 10
+      },
+      "testFraction": 0.2
+    },
+    "inputFields": [
+      {
+        "name": "TemperatureWaterEngineCircuitOutlet",
+        "isEnabled": true
+      },
+      {
+        "name": "TemperatureWaterEngineCircuitInlet",
+        "isEnabled": true
+      },
+      {
+        "name": "PositionThrottleValveA",
+        "isEnabled": true
+      },
+      {
+        "name": "TemperatureIntakeAirA",
+        "isEnabled": true
+      },
+      {
+        "name": "SpeedRelativeDumpCooler",
+        "isEnabled": true
+      },
+      {
+        "name": "SpeedEngine",
+        "isEnabled": true
+      },
+      {
+        "name": "TemperatureRoom",
+        "isEnabled": true
+      },
+      {
+        "name": "ActivePower",
+        "isEnabled": true
+      },
+      {
+        "name": "TemperatureGasMixtureA",
+        "isEnabled": true
+      },
+      {
+        "name": "TemperatureWaterCoolerMixtureCircuitInlet",
+        "isEnabled": true
+      },
+      {
+        "name": "TemperatureExhaustA",
+        "isEnabled": true
+      },
+      {
+        "name": "TemperatureExhaustB",
+        "isEnabled": true
+      },
+      {
+        "name": "PositionGasMixer",
+        "isEnabled": true
+      },
+      {
+        "name": "PressureWaterCoolerMixtureCircuit",
+        "isEnabled": true
+      }
+    ]
+  }
+}

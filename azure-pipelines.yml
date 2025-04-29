@@ -1,0 +1,87 @@
+trigger:
+  - cicd-latest-test
+
+variables:
+  imageName: 'pool-iris'
+  buildConfiguration: 'Release'
+
+stages:
+- stage: Build
+  displayName: Build and Train Model
+  jobs:
+  - job: Build
+    displayName: Build and Train
+    pool:
+      name: $(imageName)
+    workspace:
+      clean: all
+    steps:
+    - task: NuGetAuthenticate@0
+      displayName: 'Authenticate NuGet'
+      
+    - checkout: self
+      submodules: true
+      persistCredentials: true
+      
+    - task: UseDotNet@2
+      displayName: 'Setup .NET 8.0.x SDK'
+      inputs:
+        packageType: sdk
+        version: '8.0.x'
+        
+    - task: DotNetCoreCLI@2
+      displayName: 'Restore NuGet Packages'
+      inputs:
+        command: 'restore'
+        projects: '**/*.csproj'
+        feedsToUse: 'config'
+        nugetConfigPath: '$(System.DefaultWorkingDirectory)/NuGet.config'
+        
+    - task: CopyFiles@2
+      displayName: 'Copy Model Configuration'
+      inputs:
+        SourceFolder: '$(System.DefaultWorkingDirectory)'
+        Contents: '**/modelconfig.json'
+        TargetFolder: '$(Build.BinariesDirectory)/D2G.Iris.ML/bin/Release/net8.0'
+        overwrite: true
+        
+    - task: DotNetCoreCLI@2
+      displayName: 'Build D2G.Iris.ML'
+      inputs:
+        command: 'build'
+        projects: '**/D2G.Iris.ML.csproj'
+        arguments: '--configuration $(buildConfiguration)'
+        
+    - task: DotNetCoreCLI@2
+      displayName: 'Train ML Model'
+      inputs:
+        command: 'run'
+        projects: '**/D2G.Iris.ML.csproj'
+        arguments: '--configuration $(buildConfiguration)'
+        workingDirectory: '$(Build.BinariesDirectory)/D2G.Iris.ML/bin/Release/net8.0'
+        
+    - powershell: |
+        $modelFile = Get-ChildItem -Path "$(Build.BinariesDirectory)/D2G.Iris.ML/bin/Release/net8.0" -Filter "*_Model.zip" | Select-Object -First 1
+        Write-Host "##vso[task.setvariable variable=ModelFileName]$($modelFile.Name)"
+      displayName: 'Get Model File Name'
+      
+    - task: CopyFiles@2
+      displayName: 'Collect ML Model ZIP'
+      inputs:
+        SourceFolder: '$(Build.BinariesDirectory)/D2G.Iris.ML/bin/Release/net8.0'
+        Contents: |
+          $(ModelFileName)
+          ModelInfo.txt
+        TargetFolder: '$(Build.ArtifactStagingDirectory)'
+        flattenFolders: true
+        overwrite: true
+        
+    - task: CopyFiles@2
+      displayName: 'Copy to Final Destination'
+      inputs:
+        SourceFolder: '$(Build.ArtifactStagingDirectory)'
+        Contents: |
+          $(ModelFileName)
+          ModelInfo.txt
+        TargetFolder: 'D:\01_Dienste\IrisComputeServiceDevModel'
+        overwrite: true
