@@ -22,7 +22,7 @@
     },
 
     "featureEngineering": {
-      "method": "None",
+      "method": "Correlation",
       "executionOrder": 1,
       "numberOfComponents": 2,
       "maxFeatures": 2,
