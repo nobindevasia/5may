@@ -1,24 +1,36 @@
 ﻿using System;
 using System.Linq;
+using System.Text;
 using System.Threading.Tasks;
 using System.Collections.Generic;
 using Microsoft.ML;
 using Microsoft.ML.Data;
 using MathNet.Numerics.Statistics;
-using MathNet.Numerics.LinearAlgebra;
 using D2G.Iris.ML.Core.Enums;
 using D2G.Iris.ML.Core.Models;
+using D2G.Iris.ML.Core.Interfaces;
 
 namespace D2G.Iris.ML.FeatureEngineering
 {
-    public class CorrelationFeatureSelector : BaseFeatureSelector
+    public class CorrelationFeatureSelector : IFeatureSelector
     {
+        private readonly MLContext _mlContext;
+        private readonly StringBuilder _report;
+
         public CorrelationFeatureSelector(MLContext mlContext)
-            : base(mlContext)
         {
+            _mlContext = mlContext;
+            _report = new StringBuilder();
         }
 
-        public override async Task<(IDataView transformedData, string[] selectedFeatures, string report)> SelectFeatures(
+        private class FeatureRow
+        {
+            [VectorType]
+            public float[] Features { get; set; }
+            public long Label { get; set; }
+        }
+
+        public async Task<(IDataView transformedData, string[] selectedFeatures, string report)> SelectFeatures(
             MLContext mlContext,
             IDataView data,
             string[] candidateFeatures,
@@ -26,161 +38,97 @@ namespace D2G.Iris.ML.FeatureEngineering
             string targetField,
             FeatureEngineeringConfig config)
         {
-            InitializeReport("Correlation-based");
+            _report.Clear();
+            _report.AppendLine("\nCorrelation-based Feature Selection Results:");
+            _report.AppendLine("----------------------------------------------");
 
             try
             {
+                var rows = mlContext.Data.CreateEnumerable<FeatureRow>(
+                    data, reuseRowObject: false).ToList();
 
-                ValidateCorrelationConfiguration(config);
-
-                var featureValues = new List<double[]>();
-                foreach (var feature in candidateFeatures)
+                if (!rows.Any() || rows[0].Features == null)
                 {
-                    featureValues.Add(GetColumnValues(data, feature));
+                    throw new InvalidOperationException("No valid feature data found");
                 }
-
-                var targetValues = GetColumnValues(data, targetField);
 
                 var targetCorrelations = new Dictionary<string, double>();
-                for (int i = 0; i < candidateFeatures.Length; i++)
-                {
-                    var correlation = Correlation.Pearson(featureValues[i], targetValues);
-                    targetCorrelations[candidateFeatures[i]] = Math.Abs(correlation);
-                }
-
-                var correlationMatrix = Matrix<double>.Build.Dense(
-                    candidateFeatures.Length,
-                    candidateFeatures.Length
-                );
+                var targetValues = rows.Select(r => (double)r.Label).ToArray();
 
                 for (int i = 0; i < candidateFeatures.Length; i++)
                 {
-                    for (int j = 0; j < candidateFeatures.Length; j++)
-                    {
-                        correlationMatrix[i, j] = Correlation.Pearson(
-                            featureValues[i],
-                            featureValues[j]
-                        );
-                    }
+                    var featureValues = rows.Select(r => (double)r.Features[i]).ToArray();
+                    var correlation = Math.Abs(Correlation.Pearson(featureValues, targetValues));
+                    targetCorrelations[candidateFeatures[i]] = correlation;
                 }
 
                 var sortedFeatures = targetCorrelations
                     .OrderByDescending(x => x.Value)
-                    .Select(x => x.Key)
                     .ToList();
 
                 _report.AppendLine("\nFeatures Ranked by Target Correlation:");
-                foreach (var feature in sortedFeatures)
+                foreach (var pair in sortedFeatures)
                 {
-                    _report.AppendLine($"{feature,-40} | {targetCorrelations[feature]:F4}");
+                    _report.AppendLine($"{pair.Key,-40} | {pair.Value:F4}");
                 }
 
-                var selectedFeatures = SelectFeaturesWithMulticollinearityCheck(
-                    sortedFeatures,
-                    candidateFeatures,
-                    correlationMatrix,
-                    config,
-                    targetCorrelations);
+                var selectedFeatures = new List<string>();
+                var selectedIndices = new List<int>();
 
-                AddFeatureSelectionSummary(
-                    candidateFeatures.Length,
-                    selectedFeatures.Count,
-                    selectedFeatures.ToArray());
+                foreach (var pair in sortedFeatures)
+                {
+                    if (selectedFeatures.Count >= config.MaxFeatures)
+                        break;
 
+                    var currentIndex = Array.IndexOf(candidateFeatures, pair.Key);
+                    var currentValues = rows.Select(r => (double)r.Features[currentIndex]).ToArray();
+
+                    bool isHighlyCorrelated = false;
+                    foreach (var selectedIndex in selectedIndices)
+                    {
+                        var selectedValues = rows.Select(r => (double)r.Features[selectedIndex]).ToArray();
+                        var correlation = Math.Abs(Correlation.Pearson(currentValues, selectedValues));
+
+                        if (correlation > config.MulticollinearityThreshold)
+                        {
+                            isHighlyCorrelated = true;
+                            break;
+                        }
+                    }
+
+                    if (!isHighlyCorrelated)
+                    {
+                        selectedFeatures.Add(pair.Key);
+                        selectedIndices.Add(currentIndex);
+                    }
+                }
+
+                _report.AppendLine($"\nSelection Summary:");
+                _report.AppendLine($"Original features: {candidateFeatures.Length}");
+                _report.AppendLine($"Selected features: {selectedFeatures.Count}");
                 _report.AppendLine($"Multicollinearity threshold: {config.MulticollinearityThreshold}");
-                _report.AppendLine("\nSelected Features with Correlation Values:");
+                _report.AppendLine("\nSelected Features:");
                 foreach (var feature in selectedFeatures)
                 {
                     _report.AppendLine($"- {feature} (correlation with target: {targetCorrelations[feature]:F4})");
                 }
-                var transformedData = CreateFeaturesColumn(data, selectedFeatures.ToArray());
+
+                var selectedRows = rows.Select(row => new FeatureRow
+                {
+                    Features = selectedIndices.Select(i => row.Features[i]).ToArray(),
+                    Label = row.Label
+                }).ToList();
+
+                var transformedData = mlContext.Data.LoadFromEnumerable(selectedRows);
 
                 return (transformedData, selectedFeatures.ToArray(), _report.ToString());
             }
             catch (Exception ex)
             {
-                AddErrorToReport(ex);
+                _report.AppendLine($"Error during correlation analysis: {ex.Message}");
+                Console.WriteLine($"Full error details: {ex}");
                 throw;
             }
-        }
-
-        private List<string> SelectFeaturesWithMulticollinearityCheck(
-            List<string> sortedFeatures,
-            string[] candidateFeatures,
-            Matrix<double> correlationMatrix,
-            FeatureEngineeringConfig config,
-            Dictionary<string, double> targetCorrelations)
-        {
-            var selectedFeatures = new List<string>();
-
-            foreach (var feature in sortedFeatures)
-            {
-                if (selectedFeatures.Count >= config.MaxFeatures)
-                    break;
-
-                bool isHighlyCorrelated = false;
-                foreach (var selectedFeature in selectedFeatures)
-                {
-                    var i1 = Array.IndexOf(candidateFeatures, feature);
-                    var i2 = Array.IndexOf(candidateFeatures, selectedFeature);
-                    if (Math.Abs(correlationMatrix[i1, i2]) > config.MulticollinearityThreshold)
-                    {
-                        isHighlyCorrelated = true;
-                        break;
-                    }
-                }
-
-                if (!isHighlyCorrelated)
-                {
-                    selectedFeatures.Add(feature);
-                }
-            }
-            if (selectedFeatures.Count == 0 && sortedFeatures.Count > 0)
-            {
-                selectedFeatures.Add(sortedFeatures[0]);
-            }
-
-            return selectedFeatures;
-        }
-
-        private double[] GetColumnValues(IDataView dataView, string columnName)
-        {
-            var column = dataView.Schema.GetColumnOrNull(columnName);
-            if (!column.HasValue)
-                throw new ArgumentException($"Column '{columnName}' not found in data");
-
-            var type = column.Value.Type;
-
-            if (type is NumberDataViewType numType)
-            {
-                if (numType.RawType == typeof(float))
-                    return dataView.GetColumn<float>(columnName).Select(v => (double)v).ToArray();
-                else if (numType.RawType == typeof(double))
-                    return dataView.GetColumn<double>(columnName).ToArray();
-                else if (numType.RawType == typeof(int))
-                    return dataView.GetColumn<int>(columnName).Select(v => (double)v).ToArray();
-                else if (numType.RawType == typeof(long))
-                    return dataView.GetColumn<long>(columnName).Select(v => (double)v).ToArray();
-                else
-                    return dataView.GetColumn<float>(columnName).Select(v => (double)v).ToArray();
-            }
-            else if (type is BooleanDataViewType)
-            {
-                return dataView.GetColumn<bool>(columnName).Select(v => v ? 1.0 : 0.0).ToArray();
-            }
-
-            throw new NotSupportedException($"Column type {type} is not supported for correlation analysis");
-        }
-
-        private void ValidateCorrelationConfiguration(FeatureEngineeringConfig config)
-        {
-            base.ValidateConfiguration(config);
-
-            if (config.MulticollinearityThreshold <= 0 || config.MulticollinearityThreshold >= 1)
-                throw new ArgumentException("Multicollinearity threshold must be between 0 and 1 for Correlation Selection");
-
-            if (config.MaxFeatures <= 0)
-                throw new ArgumentException("Max features must be greater than 0 for Correlation Selection");
         }
     }
 }

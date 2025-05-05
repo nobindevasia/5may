@@ -30,6 +30,7 @@ namespace D2G.Iris.ML.DataBalancing
                     preparedData = pipeline.Fit(data).Transform(data);
                 }
 
+                // Convert to enumerable for processing
                 var dataEnumerable = mlContext.Data.CreateEnumerable<FeatureVector>(
                     preparedData, reuseRowObject: false).ToList();
 
@@ -38,6 +39,7 @@ namespace D2G.Iris.ML.DataBalancing
                 var minorityLabels = new List<long>();
                 var majorityLabels = new List<long>();
 
+                // Separate classes
                 foreach (var row in dataEnumerable)
                 {
                     if (row.Label == 1)
@@ -52,6 +54,7 @@ namespace D2G.Iris.ML.DataBalancing
                     }
                 }
 
+                // Ensure minority class is smaller
                 if (minorityClass.Count > majorityClass.Count)
                 {
                     var tempFeatures = minorityClass;
@@ -64,6 +67,7 @@ namespace D2G.Iris.ML.DataBalancing
 
                 Console.WriteLine($"Original counts - Minority: {minorityClass.Count}, Majority: {majorityClass.Count}");
 
+                // Undersample majority class
                 var random = new Random(42);
                 int undersampledMajorityCount = (int)(majorityClass.Count * config.UndersamplingRatio);
                 var shuffledIndices = Enumerable.Range(0, majorityClass.Count).ToList();
@@ -85,6 +89,7 @@ namespace D2G.Iris.ML.DataBalancing
                     .Select(i => majorityLabels[i])
                     .ToList();
 
+                // Generate synthetic samples
                 int targetMinorityCount = (int)(undersampledMajorityCount * config.MinorityToMajorityRatio);
                 int syntheticCount = Math.Max(0, targetMinorityCount - minorityClass.Count);
 
@@ -94,20 +99,24 @@ namespace D2G.Iris.ML.DataBalancing
                     config.KNeighbors,
                     random);
 
+                // Combine all samples
                 var balancedFeatures = new List<FeatureVector>();
 
+                // Add undersampled majority class
                 balancedFeatures.AddRange(undersampledMajority.Select((f, i) => new FeatureVector
                 {
                     Features = f,
                     Label = undersampledMajorityLabels[i]
                 }));
 
+                // Add original minority class
                 balancedFeatures.AddRange(minorityClass.Select((f, i) => new FeatureVector
                 {
                     Features = f,
                     Label = minorityLabels[i]
                 }));
 
+                // Add synthetic samples
                 balancedFeatures.AddRange(syntheticSamples.Select(f => new FeatureVector
                 {
                     Features = f,
