@@ -14,7 +14,7 @@
     },
 
     "dataBalancing": {
-      "method": "None",
+      "method": "Smote",
       "executionOrder": 2,
       "kNeighbors": 1,
       "undersamplingRatio": 0.9,

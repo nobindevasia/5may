@@ -8,19 +8,12 @@ namespace D2G.Iris.ML.Core.Interfaces
     {
         void Connect(DatabaseConfig dbConfig);
         string GetConnectionString();
-//-        void SaveToSql(
-//-            string tableName,
-//-            IDataView processedData,
-//-            string[] featureNames,
-//-            string targetField,
-//-            ModelType modelType);
-        /// <summary>
-        /// Projects each row of <paramref name="processedData"/> into T,
-        /// then bulk-inserts into SQL (optionally overriding the default table).
-        /// </summary>
-       void SaveToSql<T>(
-           IDataView processedData,
-           string tableName = null)
-            where T : class, new ();
-     }
+        void SaveToSql(
+            string tableName,
+            IDataView processedData,
+            string[] featureNames,
+            string targetField,
+            ModelType modelType);
+     
+    }
 }

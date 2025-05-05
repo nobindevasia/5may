@@ -1,26 +1,24 @@
 ﻿using System;
 using System.Data;
-using System.Data.SqlClient;
 using System.Linq;
 using System.Collections.Generic;
+using Microsoft.Data.SqlClient;
 using Microsoft.ML;
+using Microsoft.ML.Data;
 using D2G.Iris.ML.Core.Enums;
-using D2G.Iris.ML.Core.Interfaces;
 using D2G.Iris.ML.Core.Models;
+using D2G.Iris.ML.Core.Interfaces;
 
 namespace D2G.Iris.ML.Data
 {
     public class SqlHandler : ISqlHandler
     {
-        private readonly string _defaultTableName;
-        private readonly MLContext _mlContext;
         private SqlConnectionStringBuilder _builder;
+        private readonly string _tableName;
 
-        public SqlHandler(string defaultTableName, MLContext mlContext = null)
+        public SqlHandler(string tableName)
         {
-            _defaultTableName = defaultTableName
-                ?? throw new ArgumentNullException(nameof(defaultTableName));
-            _mlContext = mlContext ?? new MLContext();
+            _tableName = tableName ?? throw new ArgumentNullException(nameof(tableName));
         }
 
         public void Connect(DatabaseConfig dbConfig)
@@ -42,99 +40,134 @@ namespace D2G.Iris.ML.Data
             return _builder.ConnectionString;
         }
 
-        /// <summary>
-        /// Saves every row in <paramref name="data"/>—projected as T—into SQL via bulk-copy.
-        /// T must have public properties for each feature + target field.
-        /// </summary>
-        public void SaveToSql<T>(IDataView data, string tableName = null) where T : class, new()
+        public void SaveToSql(
+            string tableName,
+            IDataView data,
+            string[] featureNames,
+            string targetField,
+            ModelType modelType)
         {
-            // determine destination table
-            var destTable = string.IsNullOrWhiteSpace(tableName)
-                              ? _defaultTableName
-                              : tableName;
+            var destTable = string.IsNullOrWhiteSpace(tableName) ? _tableName : tableName;
             if (string.IsNullOrWhiteSpace(destTable))
                 throw new ArgumentException("Table name must be provided.", nameof(tableName));
 
-            // project IDataView → IEnumerable<T>
-            var rows = _mlContext.Data
-                                 .CreateEnumerable<T>(data, reuseRowObject: false)
-                                 .ToList();
-            if (!rows.Any())
-                return;  // nothing to save
+            var dataTable = new DataTable();
 
-            // build a DataTable via reflection
-            var dataTable = ToDataTable(rows);
+            foreach (var feature in featureNames)
+            {
+                dataTable.Columns.Add(feature, typeof(float));
+            }
 
-            // (re)create the SQL table
-            var createSql = BuildCreateTableSql<T>(destTable);
-            using var conn = new SqlConnection(GetConnectionString());
-            conn.Open();
-            using (var cmd = new SqlCommand(createSql, conn))
+            Type targetDotNetType = modelType switch
+            {
+                ModelType.BinaryClassification => typeof(long),
+                ModelType.MultiClassClassification => typeof(long),
+                _ => typeof(float)
+            };
+            dataTable.Columns.Add(targetField, targetDotNetType);
+
+            var featuresCol = data.Schema.GetColumnOrNull("Features");
+            var targetCol = data.Schema.GetColumnOrNull(targetField);
+
+            if (!featuresCol.HasValue)
+                throw new InvalidOperationException("Features column not found");
+            if (!targetCol.HasValue)
+                throw new InvalidOperationException($"Target column '{targetField}' not found");
+
+            var cursor = data.GetRowCursor(data.Schema);
+            var featuresGetter = cursor.GetGetter<VBuffer<float>>(featuresCol.Value);
+            var targetType = targetCol.Value.Type;
+
+            ValueGetter<float> targetFloatGetter = null;
+            ValueGetter<long> targetLongGetter = null;
+            ValueGetter<bool> targetBoolGetter = null;
+
+            if (targetType is NumberDataViewType numType)
+            {
+                if (numType.RawType == typeof(long))
+                    targetLongGetter = cursor.GetGetter<long>(targetCol.Value);
+                else
+                    targetFloatGetter = cursor.GetGetter<float>(targetCol.Value);
+            }
+            else if (targetType is BooleanDataViewType)
+            {
+                targetBoolGetter = cursor.GetGetter<bool>(targetCol.Value);
+            }
+
+            var featureBuffer = default(VBuffer<float>);
+            while (cursor.MoveNext())
+            {
+                var row = dataTable.NewRow();
+
+                featuresGetter(ref featureBuffer);
+                var denseValues = featureBuffer.GetValues().ToArray();
+
+                for (int i = 0; i < featureNames.Length && i < denseValues.Length; i++)
+                {
+                    row[featureNames[i]] = denseValues[i];
+                }
+
+                if (targetLongGetter != null)
+                {
+                    long val = 0;
+                    targetLongGetter(ref val);
+                    row[targetField] = val;
+                }
+                else if (targetFloatGetter != null)
+                {
+                    float val = 0;
+                    targetFloatGetter(ref val);
+                    row[targetField] = modelType == ModelType.BinaryClassification ?
+                        (val > 0.5f ? 1L : 0L) : val;
+                }
+                else if (targetBoolGetter != null)
+                {
+                    bool val = false;
+                    targetBoolGetter(ref val);
+                    row[targetField] = modelType == ModelType.BinaryClassification ?
+                        (val ? 1L : 0L) : (val ? 1f : 0f);
+                }
+
+                dataTable.Rows.Add(row);
+            }
+
+            using var connection = new SqlConnection(GetConnectionString());
+            connection.Open();
+
+            var columnDefinitions = featureNames
+                .Select(f => $"[{f}] FLOAT")
+                .Concat(new[]
+                {
+                    $"[{targetField}] {(modelType == ModelType.Regression ? "FLOAT" : "BIGINT")}",
+                    "ProcessedDateTime DATETIME DEFAULT GETDATE()"
+                });
+
+            string createSql = $@"
+IF OBJECT_ID('{destTable}', 'U') IS NOT NULL
+    DROP TABLE {destTable};
+CREATE TABLE {destTable} (
+    {string.Join(",\n    ", columnDefinitions)}
+);";
+
+            using (var cmd = new SqlCommand(createSql, connection))
+            {
                 cmd.ExecuteNonQuery();
+            }
 
-            // bulk-copy
-            using var bulk = new SqlBulkCopy(conn)
+            using var bulk = new SqlBulkCopy(connection)
             {
                 DestinationTableName = destTable,
-                BatchSize = 1_000,
+                BatchSize = 1000,
                 BulkCopyTimeout = 300
             };
-            foreach (DataColumn col in dataTable.Columns)
-                bulk.ColumnMappings.Add(col.ColumnName, col.ColumnName);
+
+            foreach (var feature in featureNames)
+            {
+                bulk.ColumnMappings.Add(feature, feature);
+            }
+            bulk.ColumnMappings.Add(targetField, targetField);
 
             bulk.WriteToServer(dataTable);
-        }
-
-        // helper: convert list of POCOs to DataTable
-        private static DataTable ToDataTable<T>(IEnumerable<T> data)
-        {
-            var table = new DataTable();
-            var props = typeof(T).GetProperties();
-
-            // add columns
-            foreach (var p in props)
-            {
-                var type = Nullable.GetUnderlyingType(p.PropertyType)
-                           ?? p.PropertyType;
-                table.Columns.Add(p.Name, type);
-            }
-
-            // add rows
-            foreach (var item in data)
-            {
-                var values = props
-                  .Select(p => p.GetValue(item) ?? DBNull.Value)
-                  .ToArray();
-                table.Rows.Add(values);
-            }
-
-            return table;
-        }
-
-        // helper: emits a DROP+CREATE DDL that matches T’s properties to SQL types
-        private static string BuildCreateTableSql<T>(string tableName)
-        {
-            var cols = typeof(T)
-              .GetProperties()
-              .Select(p =>
-              {
-                  var t = Nullable.GetUnderlyingType(p.PropertyType)
-                          ?? p.PropertyType;
-                  var sqlType = t == typeof(bool) ? "BIT"
-                              : t == typeof(int) ? "INT"
-                              : t == typeof(long) ? "BIGINT"
-                              : t == typeof(DateTime) ? "DATETIME"
-                              : "FLOAT";
-                  return $"[{p.Name}] {sqlType}";
-              });
-
-            return $@"
-IF OBJECT_ID('{tableName}', 'U') IS NOT NULL
-    DROP TABLE {tableName};
-CREATE TABLE {tableName} (
-    {string.Join(", ", cols)},
-    ProcessedDateTime DATETIME DEFAULT GETDATE()
-);";
         }
     }
 }
