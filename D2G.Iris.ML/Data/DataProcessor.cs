@@ -7,7 +7,7 @@ using D2G.Iris.ML.Core.Enums;
 using D2G.Iris.ML.Core.Models;
 using D2G.Iris.ML.DataBalancing;
 using D2G.Iris.ML.FeatureEngineering;
-using D2G.Iris.ML.Interfaces;
+using D2G.Iris.ML.Core.Interfaces;
 using D2G.Iris.ML.Core.Interfaces;
 
 namespace D2G.Iris.ML.Data

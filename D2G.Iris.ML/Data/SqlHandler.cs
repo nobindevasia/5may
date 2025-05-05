@@ -1,25 +1,26 @@
 ﻿using System;
 using System.Data;
+using System.Data.SqlClient;
 using System.Linq;
 using System.Collections.Generic;
-using Microsoft.Data.SqlClient;
 using Microsoft.ML;
-using Microsoft.ML.Data;
 using D2G.Iris.ML.Core.Enums;
 using D2G.Iris.ML.Core.Interfaces;
 using D2G.Iris.ML.Core.Models;
-using D2G.Iris.ML.Interfaces;
 
 namespace D2G.Iris.ML.Data
 {
     public class SqlHandler : ISqlHandler
     {
+        private readonly string _defaultTableName;
+        private readonly MLContext _mlContext;
         private SqlConnectionStringBuilder _builder;
-        private readonly string _tableName;
 
-        public SqlHandler(string tableName)
+        public SqlHandler(string defaultTableName, MLContext mlContext = null)
         {
-            _tableName = tableName ?? throw new ArgumentNullException(nameof(tableName));
+            _defaultTableName = defaultTableName
+                ?? throw new ArgumentNullException(nameof(defaultTableName));
+            _mlContext = mlContext ?? new MLContext();
         }
 
         public void Connect(DatabaseConfig dbConfig)
@@ -41,146 +42,99 @@ namespace D2G.Iris.ML.Data
             return _builder.ConnectionString;
         }
 
-        public void SaveToSql(
-            string tableName,
-            IDataView data,
-            string[] featureNames,
-            string targetField,
-            ModelType modelType)
+        /// <summary>
+        /// Saves every row in <paramref name="data"/>—projected as T—into SQL via bulk-copy.
+        /// T must have public properties for each feature + target field.
+        /// </summary>
+        public void SaveToSql<T>(IDataView data, string tableName = null) where T : class, new()
         {
-            var destTable = string.IsNullOrWhiteSpace(tableName) ? _tableName : tableName;
+            // determine destination table
+            var destTable = string.IsNullOrWhiteSpace(tableName)
+                              ? _defaultTableName
+                              : tableName;
             if (string.IsNullOrWhiteSpace(destTable))
                 throw new ArgumentException("Table name must be provided.", nameof(tableName));
 
-            var dataTable = new DataTable();
-            foreach (var feature in featureNames)
-                dataTable.Columns.Add(feature, typeof(float));
+            // project IDataView → IEnumerable<T>
+            var rows = _mlContext.Data
+                                 .CreateEnumerable<T>(data, reuseRowObject: false)
+                                 .ToList();
+            if (!rows.Any())
+                return;  // nothing to save
 
-            Type targetDotNetType = modelType switch
-            {
-                ModelType.BinaryClassification => typeof(bool),
-                ModelType.MultiClassClassification => typeof(int),
-                _ => typeof(float)
-            };
-            dataTable.Columns.Add(targetField, targetDotNetType);
+            // build a DataTable via reflection
+            var dataTable = ToDataTable(rows);
 
-            var featsCol = data.Schema.GetColumnOrNull("Features");
-            bool isPca = featsCol.HasValue && featureNames.All(f => f.StartsWith("PCA_Component_"));
+            // (re)create the SQL table
+            var createSql = BuildCreateTableSql<T>(destTable);
+            using var conn = new SqlConnection(GetConnectionString());
+            conn.Open();
+            using (var cmd = new SqlCommand(createSql, conn))
+                cmd.ExecuteNonQuery();
 
-            var featureRows = new List<float[]>();
-            int rowCount;
-
-            if (isPca)
-            {
-                var vectors = data.GetColumn<VBuffer<float>>("Features").ToArray();
-                rowCount = vectors.Length;
-                foreach (var vec in vectors)
-                {
-                    var vals = vec.GetValues().ToArray();
-                    var rowVec = new float[featureNames.Length];
-                    for (int j = 0; j < featureNames.Length; j++)
-                        rowVec[j] = j < vals.Length ? vals[j] : 0f;
-                    featureRows.Add(rowVec);
-                }
-            }
-            else
-            {
-                var columns = new float[featureNames.Length][];
-                for (int i = 0; i < featureNames.Length; i++)
-                    columns[i] = data.GetColumn<float>(featureNames[i]).ToArray();
-
-                rowCount = columns.Any() ? columns[0].Length : 0;
-                for (int r = 0; r < rowCount; r++)
-                {
-                    var rowVec = new float[featureNames.Length];
-                    for (int c = 0; c < featureNames.Length; c++)
-                        rowVec[c] = columns[c][r];
-                    featureRows.Add(rowVec);
-                }
-            }
-
-            var colOpt = data.Schema.GetColumnOrNull(targetField);
-            if (!colOpt.HasValue)
-                throw new InvalidOperationException($"Target column '{targetField}' not found in schema.");
-            var rawType = colOpt.Value.Type;
-            Array targetArray;
-
-            if (modelType == ModelType.BinaryClassification)
-            {
-                if (rawType is BooleanDataViewType)
-                    targetArray = data.GetColumn<bool>(targetField).ToArray();
-                else if (rawType is NumberDataViewType numLong && numLong.RawType == typeof(long))
-                    targetArray = data.GetColumn<long>(targetField).Select(l => l > 0).ToArray();
-                else if (rawType is NumberDataViewType numFloat && numFloat.RawType == typeof(float))
-                    targetArray = data.GetColumn<float>(targetField).Select(f => f > 0).ToArray();
-                else
-                    throw new InvalidOperationException($"Cannot convert target column '{targetField}' of type {rawType} to bool.");
-            }
-            else if (modelType == ModelType.MultiClassClassification)
-            {
-                if (rawType is NumberDataViewType numLong && numLong.RawType == typeof(long))
-                    targetArray = data.GetColumn<long>(targetField).Select(l => (int)l).ToArray();
-                else if (rawType is NumberDataViewType numFloat && numFloat.RawType == typeof(float))
-                    targetArray = data.GetColumn<float>(targetField).Select(f => Convert.ToInt32(f)).ToArray();
-                else if (rawType is BooleanDataViewType)
-                    targetArray = data.GetColumn<bool>(targetField).Select(b => b ? 1 : 0).ToArray();
-                else
-                    throw new InvalidOperationException($"Cannot convert target column '{targetField}' of type {rawType} to int.");
-            }
-            else // Regression
-            {
-                if (rawType is NumberDataViewType numFloat && numFloat.RawType == typeof(float))
-                    targetArray = data.GetColumn<float>(targetField).ToArray();
-                else if (rawType is NumberDataViewType numLong && numLong.RawType == typeof(long))
-                    targetArray = data.GetColumn<long>(targetField).Select(l => Convert.ToSingle(l)).ToArray();
-                else if (rawType is BooleanDataViewType)
-                    targetArray = data.GetColumn<bool>(targetField).Select(b => b ? 1f : 0f).ToArray();
-                else
-                    throw new InvalidOperationException($"Cannot convert target column '{targetField}' of type {rawType} to float.");
-            }
-
-
-            for (int r = 0; r < rowCount; r++)
-            {
-                var dr = dataTable.NewRow();
-                var rowVec = featureRows[r];
-                for (int c = 0; c < featureNames.Length; c++)
-                    dr[featureNames[c]] = rowVec[c];
-                dr[targetField] = targetArray.GetValue(r);
-                dataTable.Rows.Add(dr);
-            }
-
-
-            using var connection = new SqlConnection(GetConnectionString());
-            connection.Open();
-            string colsDef = string.Join(", ", featureNames.Select(f => $"[{f}] FLOAT"));
-            string targetSqlType = modelType switch
-            {
-                ModelType.BinaryClassification => "BIT",
-                ModelType.MultiClassClassification => "INT",
-                _ => "FLOAT"
-            };
-            string createSql = $@"
-IF OBJECT_ID('{destTable}', 'U') IS NOT NULL
-    DROP TABLE {destTable};
-CREATE TABLE {destTable} (
-    {colsDef},
-    [{targetField}] {targetSqlType},
-    ProcessedDateTime DATETIME DEFAULT GETDATE()
-);";
-            using var cmd = new SqlCommand(createSql, connection);
-            cmd.ExecuteNonQuery();
-
-            using var bulk = new SqlBulkCopy(connection)
+            // bulk-copy
+            using var bulk = new SqlBulkCopy(conn)
             {
                 DestinationTableName = destTable,
-                BatchSize = 1000,
+                BatchSize = 1_000,
                 BulkCopyTimeout = 300
             };
-            foreach (var feature in featureNames)
-                bulk.ColumnMappings.Add(feature, feature);
-            bulk.ColumnMappings.Add(targetField, targetField);
+            foreach (DataColumn col in dataTable.Columns)
+                bulk.ColumnMappings.Add(col.ColumnName, col.ColumnName);
+
             bulk.WriteToServer(dataTable);
+        }
+
+        // helper: convert list of POCOs to DataTable
+        private static DataTable ToDataTable<T>(IEnumerable<T> data)
+        {
+            var table = new DataTable();
+            var props = typeof(T).GetProperties();
+
+            // add columns
+            foreach (var p in props)
+            {
+                var type = Nullable.GetUnderlyingType(p.PropertyType)
+                           ?? p.PropertyType;
+                table.Columns.Add(p.Name, type);
+            }
+
+            // add rows
+            foreach (var item in data)
+            {
+                var values = props
+                  .Select(p => p.GetValue(item) ?? DBNull.Value)
+                  .ToArray();
+                table.Rows.Add(values);
+            }
+
+            return table;
+        }
+
+        // helper: emits a DROP+CREATE DDL that matches T’s properties to SQL types
+        private static string BuildCreateTableSql<T>(string tableName)
+        {
+            var cols = typeof(T)
+              .GetProperties()
+              .Select(p =>
+              {
+                  var t = Nullable.GetUnderlyingType(p.PropertyType)
+                          ?? p.PropertyType;
+                  var sqlType = t == typeof(bool) ? "BIT"
+                              : t == typeof(int) ? "INT"
+                              : t == typeof(long) ? "BIGINT"
+                              : t == typeof(DateTime) ? "DATETIME"
+                              : "FLOAT";
+                  return $"[{p.Name}] {sqlType}";
+              });
+
+            return $@"
+IF OBJECT_ID('{tableName}', 'U') IS NOT NULL
+    DROP TABLE {tableName};
+CREATE TABLE {tableName} (
+    {string.Join(", ", cols)},
+    ProcessedDateTime DATETIME DEFAULT GETDATE()
+);";
         }
     }
 }

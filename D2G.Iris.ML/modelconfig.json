@@ -10,11 +10,11 @@
       "database": "sql-iris-dev",
       "whereClause": "",
       "tableName": "ComputeData.MessageProb256_Ag408_dummy",
-      "outputTableName": ""
+      "outputTableName": "ComputeData.MessageProb256_Ag408_dummy_pr"
     },
 
     "dataBalancing": {
-      "method": "Smote",
+      "method": "None",
       "executionOrder": 2,
       "kNeighbors": 1,
       "undersamplingRatio": 0.9,
@@ -22,10 +22,10 @@
     },
 
     "featureEngineering": {
-      "method": "Correlation",
+      "method": "None",
       "executionOrder": 1,
       "numberOfComponents": 2,
-      "maxFeatures": 3,
+      "maxFeatures": 2,
       "minImprovement": 0.01,
       "multicollinearityThreshold": 0.7
     },
