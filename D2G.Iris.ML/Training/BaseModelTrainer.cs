@@ -29,18 +29,13 @@ namespace D2G.Iris.ML.Training
             ModelConfig config,
             ProcessedData processedData);
 
-        /// <summary>
-        /// Creates a base data processing pipeline for normalization and caching
-        /// </summary>
+
         protected IEstimator<ITransformer> GetBasePipeline(MLContext mlContext)
         {
             return mlContext.Transforms.NormalizeMinMax("Features")
                            .AppendCacheCheckpoint(mlContext);
         }
 
-        /// <summary>
-        /// Splits data into training and testing sets based on configuration
-        /// </summary>
         protected TrainTestData SplitTrainTestData(
             MLContext mlContext,
             IDataView dataView,
@@ -53,9 +48,6 @@ namespace D2G.Iris.ML.Training
                 seed: 42);
         }
 
-        /// <summary>
-        /// Executes model training asynchronously with timing
-        /// </summary>
         protected async Task<ITransformer> TrainModelAsync(
             IEstimator<ITransformer> pipeline,
             IDataView trainData)
@@ -68,9 +60,6 @@ namespace D2G.Iris.ML.Training
             return model;
         }
 
-        /// <summary>
-        /// Saves the trained model to disk
-        /// </summary>
         protected void SaveModel(
             MLContext mlContext,
             ITransformer model,
@@ -80,12 +69,10 @@ namespace D2G.Iris.ML.Training
         {
             var modelPath = $"{modelPrefix}_{algorithmName}_Model.zip";
             mlContext.Model.Save(model, dataView.Schema, modelPath);
-            Console.WriteLine($"Model saved to: {modelPath}");
+            Console.WriteLine($"Model saved: {modelPath}");
         }
 
-        /// <summary>
-        /// Shared processing to create the model information file
-        /// </summary>
+
         protected async Task SaveModelInfo<TMetrics>(
             TMetrics metrics,
             IDataView dataView,
@@ -101,9 +88,6 @@ namespace D2G.Iris.ML.Training
                 processedData);
         }
 
-        /// <summary>
-        /// Evaluates binary classification models and prints metrics
-        /// </summary>
         protected BinaryClassificationMetrics EvaluateBinaryClassification(
             MLContext mlContext,
             ITransformer model,
@@ -124,9 +108,6 @@ namespace D2G.Iris.ML.Training
             return metrics;
         }
 
-        /// <summary>
-        /// Evaluates multiclass classification models and prints metrics
-        /// </summary>
         protected MulticlassClassificationMetrics EvaluateMultiClassClassification(
             MLContext mlContext,
             ITransformer model,
@@ -143,9 +124,6 @@ namespace D2G.Iris.ML.Training
             return metrics;
         }
 
-        /// <summary>
-        /// Evaluates regression models and prints metrics
-        /// </summary>
         protected RegressionMetrics EvaluateRegression(
             MLContext mlContext,
             ITransformer model,

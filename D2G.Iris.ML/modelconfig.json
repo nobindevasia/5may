@@ -25,12 +25,12 @@
       "method": "Correlation",
       "executionOrder": 1,
       "numberOfComponents": 2,
-      "maxFeatures": 2,
+      "maxFeatures": 3,
       "minImprovement": 0.01,
       "multicollinearityThreshold": 0.7
     },
 
-    "trainingParameters": {
+    "trainingParameters": { 
       "algorithm": "fasttree",
       "algorithmParameters": {
         "NumberOfLeaves": 10

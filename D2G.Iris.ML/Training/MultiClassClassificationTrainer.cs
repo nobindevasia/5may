@@ -50,7 +50,7 @@ namespace D2G.Iris.ML.Training
                 var trainer = _trainerFactory.GetTrainer(
                     config.ModelType,
                     config.TrainingParameters);
-
+                
                 pipeline = pipeline
                     .Append(trainer)
                     .Append(_mlContext.Transforms.Conversion
@@ -63,7 +63,7 @@ namespace D2G.Iris.ML.Training
                     model,
                     splitData.TestSet,
                     config.TrainingParameters.Algorithm);
-
+               
 
                 await SaveModelInfo(
                     metrics,

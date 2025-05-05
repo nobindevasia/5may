@@ -135,16 +135,16 @@ namespace D2G.Iris.ML.Utils
 
                 if (config != null && processedData != null)
                 {
+                    if (config.DataBalancing.Method != DataBalanceMethod.None)
+                    { 
                     writer.WriteLine("\n-------------------------------------------------------");
                     writer.WriteLine("Data Balancing Information:");
                     writer.WriteLine($"Method: {config.DataBalancing.Method}");
                     writer.WriteLine($"Original Sample Count: {processedData.OriginalSampleCount}");
                     writer.WriteLine($"Balanced Sample Count: {processedData.BalancedSampleCount}");
-                    if (config.DataBalancing.Method != DataBalanceMethod.None)
-                    {
-                        writer.WriteLine($"Undersampling Ratio: {config.DataBalancing.UndersamplingRatio:F2}");
-                        writer.WriteLine($"Minority to Majority Ratio: {config.DataBalancing.MinorityToMajorityRatio:F2}");
-                        writer.WriteLine($"K Neighbors: {config.DataBalancing.KNeighbors}");
+                    writer.WriteLine($"Undersampling Ratio: {config.DataBalancing.UndersamplingRatio:F2}");
+                    writer.WriteLine($"Minority to Majority Ratio: {config.DataBalancing.MinorityToMajorityRatio:F2}");
+                    writer.WriteLine($"K Neighbors: {config.DataBalancing.KNeighbors}");
                     }
 
                     writer.WriteLine("\n-------------------------------------------------------");
